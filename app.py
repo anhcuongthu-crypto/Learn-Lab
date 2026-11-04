@@ -40,7 +40,11 @@ def register():
 def login():
  if request.method=="POST":
   u=User.query.filter((User.email==request.form["identity"].lower())|(User.username==request.form["identity"])).first()
-  if u and check_password_hash(u.password,request.form["password"]): login_user(u); return redirect(url_for("dashboard"))
+  if u and check_password_hash(u.password,request.form["password"]):
+   admin_email=os.getenv("ADMIN_EMAIL","").strip().lower()
+   if admin_email and u.email.lower()==admin_email and not u.admin:
+    u.admin=True; db.session.commit()
+   login_user(u); return redirect(url_for("dashboard"))
   flash("Sai thông tin đăng nhập.")
  return render_template("auth.html",register=False)
 @app.route("/logout")
