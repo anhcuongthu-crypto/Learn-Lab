@@ -4,23 +4,35 @@ import secrets, smtplib, ssl, json, urllib.parse, urllib.request
 from email.message import EmailMessage
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import selectinload
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 app=Flask(__name__); app.config["SECRET_KEY"]=os.getenv("SECRET_KEY","change-me")
 url=os.getenv("DATABASE_URL","sqlite:///learnlab.db")
 if url.startswith("postgres://"): url=url.replace("postgres://","postgresql://",1)
-app.config["SQLALCHEMY_DATABASE_URI"]=url; db=SQLAlchemy(app); lm=LoginManager(app); lm.login_view="login"
+app.config["SQLALCHEMY_DATABASE_URI"]=url
+if url.startswith("postgresql://"): app.config["SQLALCHEMY_ENGINE_OPTIONS"]={"pool_pre_ping":True,"pool_recycle":300}
+db=SQLAlchemy(app); lm=LoginManager(app); lm.login_view="login"
 class User(UserMixin,db.Model):
  id=db.Column(db.Integer,primary_key=True); username=db.Column(db.String(50),unique=True); email=db.Column(db.String(120),unique=True); password=db.Column(db.String(255)); xp=db.Column(db.Integer,default=0); hearts=db.Column(db.Integer,default=5); streak=db.Column(db.Integer,default=0); last_study=db.Column(db.Date); admin=db.Column(db.Boolean,default=False)
 class Course(db.Model):
- id=db.Column(db.Integer,primary_key=True); title=db.Column(db.String(120)); description=db.Column(db.String(300)); emoji=db.Column(db.String(12),default="📘"); lessons=db.relationship("Lesson",backref="course",cascade="all,delete-orphan")
+ id=db.Column(db.Integer,primary_key=True); title=db.Column(db.String(120)); description=db.Column(db.String(300)); emoji=db.Column(db.String(12),default="📘"); lessons=db.relationship("Lesson",backref="course",cascade="all,delete-orphan",lazy="selectin")
 class Lesson(db.Model):
- id=db.Column(db.Integer,primary_key=True); course_id=db.Column(db.Integer,db.ForeignKey("course.id")); title=db.Column(db.String(120)); description=db.Column(db.String(250)); questions=db.relationship("Question",backref="lesson",cascade="all,delete-orphan")
+ id=db.Column(db.Integer,primary_key=True); course_id=db.Column(db.Integer,db.ForeignKey("course.id")); title=db.Column(db.String(120)); description=db.Column(db.String(250)); questions=db.relationship("Question",backref="lesson",cascade="all,delete-orphan",lazy="selectin")
 class Question(db.Model):
  id=db.Column(db.Integer,primary_key=True); lesson_id=db.Column(db.Integer,db.ForeignKey("lesson.id")); prompt=db.Column(db.String(500)); answer=db.Column(db.String(250)); choices=db.Column(db.String(600),default=""); hint=db.Column(db.String(250),default="")
 class Progress(db.Model):
  id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer,db.ForeignKey("user.id")); lesson_id=db.Column(db.Integer,db.ForeignKey("lesson.id")); score=db.Column(db.Integer,default=0)
  __table_args__=(db.UniqueConstraint("user_id","lesson_id"),)
+class Attempt(db.Model):
+ id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer,db.ForeignKey("user.id"),index=True); lesson_id=db.Column(db.Integer,db.ForeignKey("lesson.id"),index=True)
+ score=db.Column(db.Integer,default=0); total=db.Column(db.Integer,default=0); percent=db.Column(db.Integer,default=0)
+ started_at=db.Column(db.DateTime,default=datetime.utcnow); completed_at=db.Column(db.DateTime)
+ answers=db.relationship("AttemptAnswer",backref="attempt",cascade="all,delete-orphan",lazy="selectin",order_by="AttemptAnswer.id")
+class AttemptAnswer(db.Model):
+ id=db.Column(db.Integer,primary_key=True); attempt_id=db.Column(db.Integer,db.ForeignKey("attempt.id"),index=True)
+ question_id=db.Column(db.Integer,db.ForeignKey("question.id"),nullable=True); question_text=db.Column(db.String(500)); answer_text=db.Column(db.String(1000))
+ correct_answer=db.Column(db.String(250)); is_correct=db.Column(db.Boolean,default=False); answered_at=db.Column(db.DateTime,default=datetime.utcnow)
 @lm.user_loader
 def load(uid): return db.session.get(User,int(uid))
 def seed():
@@ -86,36 +98,42 @@ def google_callback():
 def logout(): logout_user(); return redirect(url_for("home"))
 @app.route("/dashboard")
 @login_required
-def dashboard(): return render_template("dashboard.html",courses=Course.query.all(),leaders=User.query.order_by(User.xp.desc()).limit(5).all())
+def dashboard(): return render_template("dashboard.html",courses=Course.query.options(selectinload(Course.lessons)).all(),leaders=User.query.order_by(User.xp.desc()).limit(5).all())
 @app.route("/course/<int:cid>")
 @login_required
-def course(cid): return render_template("course.html",course=Course.query.get_or_404(cid))
+def course(cid): return render_template("course.html",course=Course.query.options(selectinload(Course.lessons)).filter_by(id=cid).first_or_404())
 @app.route("/lesson/<int:lid>",methods=["GET"])
 @login_required
 def lesson(lid):
- l=Lesson.query.get_or_404(lid)
- session["lesson_run"]={"lesson_id":lid,"index":0,"score":0,"answers":[],"finished":False}
+ l=Lesson.query.options(selectinload(Lesson.questions)).filter_by(id=lid).first_or_404()
+ if not l.questions: flash("Bài học chưa có câu hỏi."); return redirect(url_for("course",cid=l.course_id))
+ attempt=Attempt(user_id=current_user.id,lesson_id=lid,total=len(l.questions))
+ db.session.add(attempt); db.session.commit()
+ session["lesson_run"]={"lesson_id":lid,"attempt_id":attempt.id,"index":0,"score":0,"finished":False}
  return render_template("lesson.html",lesson=l)
 @app.route("/lesson/<int:lid>/answer",methods=["POST"])
 @login_required
 def lesson_answer(lid):
- l=Lesson.query.get_or_404(lid); qs=l.questions
  run=session.get("lesson_run")
- if not run or run.get("lesson_id")!=lid or run.get("finished") or not qs:
+ if not run or run.get("lesson_id")!=lid or run.get("finished"):
   return jsonify({"error":"Phiên học không hợp lệ. Hãy tải lại bài học."}),400
+ l=Lesson.query.options(selectinload(Lesson.questions)).filter_by(id=lid).first_or_404(); qs=l.questions
  idx=run["index"]
  if idx>=len(qs): return jsonify({"error":"Bài học đã kết thúc."}),400
+ attempt=Attempt.query.filter_by(id=run.get("attempt_id"),user_id=current_user.id,lesson_id=lid,completed_at=None).first()
+ if not attempt: return jsonify({"error":"Không tìm thấy lượt làm bài. Hãy tải lại bài học."}),400
  q=qs[idx]; data=request.get_json(silent=True) or {}
  answer=str(data.get("answer","")).strip()
  if not answer: return jsonify({"error":"Hãy chọn hoặc nhập câu trả lời."}),400
  correct=answer.casefold()==q.answer.strip().casefold()
- run["answers"].append({"question_id":q.id,"correct":correct})
+ db.session.add(AttemptAnswer(attempt_id=attempt.id,question_id=q.id,question_text=q.prompt,answer_text=answer,correct_answer=q.answer,is_correct=correct))
  if correct: run["score"]+=1
  run["index"]+=1
  done=run["index"]>=len(qs)
- pct=round(run["score"]*100/len(qs))
+ pct=round(run["score"]*100/len(qs)) if qs else 0
+ attempt.score=run["score"]; attempt.percent=pct
  if done:
-  run["finished"]=True
+  run["finished"]=True; attempt.completed_at=datetime.utcnow()
   p=Progress.query.filter_by(user_id=current_user.id,lesson_id=lid).first()
   if not p: p=Progress(user_id=current_user.id,lesson_id=lid); db.session.add(p)
   p.score=max(int(p.score or 0),pct)
@@ -123,18 +141,19 @@ def lesson_answer(lid):
    current_user.xp+=run["score"]*10+10
    if current_user.last_study!=date.today(): current_user.streak=current_user.streak+1 if current_user.last_study and (date.today()-current_user.last_study).days==1 else 1; current_user.last_study=date.today()
   else: current_user.hearts=max(0,current_user.hearts-1)
-  db.session.commit()
+ db.session.commit()
  session["lesson_run"]=run
  return jsonify({"correct":correct,"correct_answer":q.answer,"progress":run["score"],"total":len(qs),"next_index":run["index"],"done":done,"score":run["score"],"pct":pct,"result_url":url_for("lesson_result",lid=lid) if done else None})
 @app.route("/lesson/<int:lid>/result")
 @login_required
 def lesson_result(lid):
- l=Lesson.query.get_or_404(lid); run=session.get("lesson_run")
+ l=Lesson.query.options(selectinload(Lesson.questions)).filter_by(id=lid).first_or_404(); run=session.get("lesson_run")
  if not run or run.get("lesson_id")!=lid or not run.get("finished"): return redirect(url_for("lesson",lid=lid))
- return render_template("result.html",lesson=l,score=run["score"],total=len(l.questions),pct=round(run["score"]*100/len(l.questions)) if l.questions else 0)
+ total=len(l.questions)
+ return render_template("result.html",lesson=l,score=run["score"],total=total,pct=round(run["score"]*100/total) if total else 0)
 @app.route("/leaderboard")
 @login_required
-def leaderboard(): return render_template("leaderboard.html",users=User.query.order_by(User.xp.desc()).all())
+def leaderboard(): return render_template("leaderboard.html",users=User.query.order_by(User.xp.desc()).limit(100).all())
 @app.route("/admin",methods=["GET","POST"])
 @login_required
 def admin():
