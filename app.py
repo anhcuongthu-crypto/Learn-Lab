@@ -31,14 +31,27 @@ def seed():
 @app.route("/")
 def home(): return redirect(url_for("dashboard")) if current_user.is_authenticated else render_template("home.html")
 def send_otp_email(email, code, purpose):
+ api_key=os.getenv("RESEND_API_KEY","").strip()
+ subject="Mã xác minh LearnLab"
+ body=f"Xin chào!\\n\\nMã xác minh {purpose} LearnLab của bạn là: {code}\\nMã có hiệu lực trong 10 phút. Không chia sẻ mã này với bất kỳ ai.\\n\\nNếu bạn không thực hiện yêu cầu này, hãy bỏ qua email."
+ if api_key:
+  sender=os.getenv("MAIL_FROM","onboarding@resend.dev").strip()
+  payload=json.dumps({"from":sender,"to":[email],"subject":subject,"text":body}).encode("utf-8")
+  req=urllib.request.Request("https://api.resend.com/emails",data=payload,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"},method="POST")
+  try:
+   with urllib.request.urlopen(req,timeout=20) as response:
+    if response.status not in (200,201): raise RuntimeError(f"Resend trả về HTTP {response.status}.")
+  except Exception as e:
+   raise RuntimeError(f"Không gửi được email qua Resend: {e}")
+  return
  sender=os.getenv("MAIL_USERNAME","").strip()
  password=os.getenv("MAIL_PASSWORD","").strip()
  if not sender or not password:
-  raise RuntimeError("Chưa cấu hình MAIL_USERNAME và MAIL_PASSWORD trên Render.")
+  raise RuntimeError("Chưa cấu hình RESEND_API_KEY (khuyên dùng) hoặc MAIL_USERNAME và MAIL_PASSWORD.")
  msg=EmailMessage()
- msg["Subject"]="Mã xác minh LearnLab"
+ msg["Subject"]=subject
  msg["From"]=sender; msg["To"]=email
- msg.set_content(f"Xin chào!\n\nMã xác minh {purpose} LearnLab của bạn là: {code}\nMã có hiệu lực trong 10 phút. Không chia sẻ mã này với bất kỳ ai.\n\nNếu bạn không thực hiện yêu cầu này, hãy bỏ qua email.")
+ msg.set_content(body)
  with smtplib.SMTP(os.getenv("MAIL_SERVER","smtp.gmail.com"),int(os.getenv("MAIL_PORT","587")),timeout=20) as smtp:
   smtp.starttls(context=ssl.create_default_context()); smtp.login(sender,password); smtp.send_message(msg)
 def issue_otp(email,purpose):
