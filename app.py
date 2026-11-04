@@ -73,12 +73,13 @@ def verify_email():
    db.session.add(u); db.session.commit(); session.pop("pending_user",None); session.pop("otp_code",None); login_user(u); return redirect(url_for("dashboard"))
   else:
    session["otp_attempts"]=session.get("otp_attempts",0)+1; flash("Mã xác minh không đúng.")
- return render_template("verify.html",email=pending["email"])
+ return render_template("verify.html",email=pending["email"],purpose="register")
 @app.route("/resend-code",methods=["POST"])
 def resend_code():
  pending=session.get("pending_user")
- if not pending: return redirect(url_for("register"))
- try: issue_otp(pending["email"],"đăng ký"); flash("Đã gửi mã mới về Gmail.")
+ uid=session.get("pending_login_id")
+ if not pending and not uid: return redirect(url_for("register"))
+ try: issue_otp(pending["email"] if pending else db.session.get(User,uid).email,"đăng ký" if pending else "đăng nhập"); flash("Đã gửi mã mới về Gmail.")
  except Exception as e: flash("Không gửi được mã: "+str(e))
  return redirect(url_for("verify_email"))
 @app.route("/login",methods=["GET","POST"])
@@ -105,7 +106,7 @@ def verify_login():
    if admin_email and u.email.lower()==admin_email and not u.admin: u.admin=True; db.session.commit()
    session.pop("pending_login_id",None); session.pop("otp_code",None); login_user(u); return redirect(url_for("dashboard"))
   else: session["otp_attempts"]=session.get("otp_attempts",0)+1; flash("Mã xác minh không đúng.")
- return render_template("verify.html",email=u.email)
+ return render_template("verify.html",email=u.email,purpose="login")
 @app.route("/google-login")
 def google_login():
  client=os.getenv("GOOGLE_CLIENT_ID","").strip()
