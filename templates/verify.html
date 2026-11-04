@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% block title %}Xác minh email — LearnLab{% endblock %}{% block content %}
+<div class="card" style="max-width:470px;margin:35px auto;padding:30px">
+<div class="card-icon">✉</div><span class="eyebrow" style="display:block;margin-top:16px">EMAIL VERIFICATION</span>
+<h1 style="margin:8px 0">Kiểm tra Gmail của bạn</h1>
+<p class="muted">LearnLab đã gửi mã xác minh đến <strong>{{ email }}</strong>. Nhập mã 6 chữ số để {% if purpose == "register" %}hoàn tất đăng ký{% else %}hoàn tất đăng nhập{% endif %}.</p>
+<form method="post"><label>Mã xác minh</label><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" minlength="6" required placeholder="000000" style="text-align:center;letter-spacing:9px;font-size:24px"><button type="submit" style="width:100%;margin-top:12px">Xác nhận →</button></form>
+<form method="post" action="/resend-code" style="margin-top:12px"><button type="submit" class="secondary" style="width:100%">Gửi lại mã</button></form>
+<p class="muted tiny" style="margin-top:14px">Mã có hiệu lực trong 10 phút. Kiểm tra cả thư mục Spam nếu chưa thấy email.</p>
+</div>{% endblock %}
