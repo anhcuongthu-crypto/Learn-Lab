@@ -2,7 +2,7 @@ import os
 from datetime import date, datetime, timedelta
 import secrets, smtplib, ssl, json, urllib.parse, urllib.request
 from email.message import EmailMessage
-from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -146,21 +146,48 @@ def dashboard(): return render_template("dashboard.html",courses=Course.query.al
 @app.route("/course/<int:cid>")
 @login_required
 def course(cid): return render_template("course.html",course=Course.query.get_or_404(cid))
-@app.route("/lesson/<int:lid>",methods=["GET","POST"])
+@app.route("/lesson/<int:lid>",methods=["GET"])
 @login_required
 def lesson(lid):
  l=Lesson.query.get_or_404(lid)
- if request.method=="POST":
-  qs=l.questions; score=sum(1 for q in qs if request.form.get(str(q.id),"").strip().casefold()==q.answer.strip().casefold()); pct=round(score*100/len(qs)) if qs else 0
+ session["lesson_run"]={"lesson_id":lid,"index":0,"score":0,"answers":[],"finished":False}
+ return render_template("lesson.html",lesson=l)
+@app.route("/lesson/<int:lid>/answer",methods=["POST"])
+@login_required
+def lesson_answer(lid):
+ l=Lesson.query.get_or_404(lid); qs=l.questions
+ run=session.get("lesson_run")
+ if not run or run.get("lesson_id")!=lid or run.get("finished") or not qs:
+  return jsonify({"error":"Phiên học không hợp lệ. Hãy tải lại bài học."}),400
+ idx=run["index"]
+ if idx>=len(qs): return jsonify({"error":"Bài học đã kết thúc."}),400
+ q=qs[idx]; data=request.get_json(silent=True) or {}
+ answer=str(data.get("answer","")).strip()
+ if not answer: return jsonify({"error":"Hãy chọn hoặc nhập câu trả lời."}),400
+ correct=answer.casefold()==q.answer.strip().casefold()
+ run["answers"].append({"question_id":q.id,"correct":correct})
+ if correct: run["score"]+=1
+ run["index"]+=1
+ done=run["index"]>=len(qs)
+ pct=round(run["score"]*100/len(qs))
+ if done:
+  run["finished"]=True
   p=Progress.query.filter_by(user_id=current_user.id,lesson_id=lid).first()
   if not p: p=Progress(user_id=current_user.id,lesson_id=lid); db.session.add(p)
   p.score=max(int(p.score or 0),pct)
   if pct>=60:
-   current_user.xp+=score*10+10
+   current_user.xp+=run["score"]*10+10
    if current_user.last_study!=date.today(): current_user.streak=current_user.streak+1 if current_user.last_study and (date.today()-current_user.last_study).days==1 else 1; current_user.last_study=date.today()
   else: current_user.hearts=max(0,current_user.hearts-1)
-  db.session.commit(); return render_template("result.html",lesson=l,score=score,total=len(qs),pct=pct)
- return render_template("lesson.html",lesson=l)
+  db.session.commit()
+ session["lesson_run"]=run
+ return jsonify({"correct":correct,"correct_answer":q.answer,"progress":run["score"],"total":len(qs),"next_index":run["index"],"done":done,"score":run["score"],"pct":pct,"result_url":url_for("lesson_result",lid=lid) if done else None})
+@app.route("/lesson/<int:lid>/result")
+@login_required
+def lesson_result(lid):
+ l=Lesson.query.get_or_404(lid); run=session.get("lesson_run")
+ if not run or run.get("lesson_id")!=lid or not run.get("finished"): return redirect(url_for("lesson",lid=lid))
+ return render_template("result.html",lesson=l,score=run["score"],total=len(l.questions),pct=round(run["score"]*100/len(l.questions)) if l.questions else 0)
 @app.route("/leaderboard")
 @login_required
 def leaderboard(): return render_template("leaderboard.html",users=User.query.order_by(User.xp.desc()).all())
