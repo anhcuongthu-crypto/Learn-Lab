@@ -81,7 +81,7 @@ def resend_code():
  if not pending and not uid: return redirect(url_for("register"))
  try: issue_otp(pending["email"] if pending else db.session.get(User,uid).email,"đăng ký" if pending else "đăng nhập"); flash("Đã gửi mã mới về Gmail.")
  except Exception as e: flash("Không gửi được mã: "+str(e))
- return redirect(url_for("verify_email"))
+ return redirect(url_for("verify_email" if pending else "verify_login"))
 @app.route("/login",methods=["GET","POST"])
 def login():
  if request.method=="POST":
