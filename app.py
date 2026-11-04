@@ -30,36 +30,6 @@ def seed():
  db.session.add_all([Question(lesson_id=l.id,prompt="Xin chào trong tiếng Anh?",answer="Hello",choices="Hello|Goodbye|Thanks|Sorry",hint="Bắt đầu bằng H"),Question(lesson_id=l.id,prompt="Cảm ơn trong tiếng Anh?",answer="Thank you",choices="Please|Thank you|Sorry|Hi"),Question(lesson_id=l.id,prompt="Chọn câu giới thiệu tên đúng.",answer="My name is Lan.",choices="I name Lan.|My name is Lan.|Me Lan.|My names Lan.")]); db.session.commit()
 @app.route("/")
 def home(): return redirect(url_for("dashboard")) if current_user.is_authenticated else render_template("home.html")
-def send_otp_email(email, code, purpose):
- api_key=os.getenv("RESEND_API_KEY","").strip()
- subject="Mã xác minh LearnLab"
- body=f"Xin chào!\\n\\nMã xác minh {purpose} LearnLab của bạn là: {code}\\nMã có hiệu lực trong 10 phút. Không chia sẻ mã này với bất kỳ ai.\\n\\nNếu bạn không thực hiện yêu cầu này, hãy bỏ qua email."
- if api_key:
-  sender=os.getenv("MAIL_FROM","onboarding@resend.dev").strip()
-  payload=json.dumps({"from":sender,"to":[email],"subject":subject,"text":body}).encode("utf-8")
-  req=urllib.request.Request("https://api.resend.com/emails",data=payload,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"},method="POST")
-  try:
-   with urllib.request.urlopen(req,timeout=20) as response:
-    if response.status not in (200,201): raise RuntimeError(f"Resend trả về HTTP {response.status}.")
-  except Exception as e:
-   raise RuntimeError(f"Không gửi được email qua Resend: {e}")
-  return
- sender=os.getenv("MAIL_USERNAME","").strip()
- password=os.getenv("MAIL_PASSWORD","").strip()
- if not sender or not password:
-  raise RuntimeError("Chưa cấu hình RESEND_API_KEY (khuyên dùng) hoặc MAIL_USERNAME và MAIL_PASSWORD.")
- msg=EmailMessage()
- msg["Subject"]=subject
- msg["From"]=sender; msg["To"]=email
- msg.set_content(body)
- with smtplib.SMTP(os.getenv("MAIL_SERVER","smtp.gmail.com"),int(os.getenv("MAIL_PORT","587")),timeout=20) as smtp:
-  smtp.starttls(context=ssl.create_default_context()); smtp.login(sender,password); smtp.send_message(msg)
-def issue_otp(email,purpose):
- code=f"{secrets.randbelow(1000000):06d}"
- session["otp_code"]=generate_password_hash(code); session["otp_email"]=email
- session["otp_purpose"]=purpose; session["otp_expires"]=(datetime.utcnow()+timedelta(minutes=10)).timestamp()
- session["otp_attempts"]=0
- send_otp_email(email,code,purpose)
 @app.route("/register",methods=["GET","POST"])
 def register():
  if request.method=="POST":
@@ -67,59 +37,20 @@ def register():
   if len(name)<2 or len(pw)<6: flash("Tên tài khoản cần ít nhất 2 ký tự, mật khẩu ít nhất 6 ký tự.")
   elif User.query.filter((User.username==name)|(User.email==email)).first(): flash("Tên hoặc email đã tồn tại.")
   else:
-   session["pending_user"]={"username":name,"email":email,"password":generate_password_hash(pw)}
-   try: issue_otp(email,"đăng ký"); return redirect(url_for("verify_email"))
-   except Exception as e: session.pop("pending_user",None); flash("Không gửi được mã xác minh. "+str(e))
+   u=User(username=name,email=email,password=generate_password_hash(pw),admin=email==os.getenv("ADMIN_EMAIL","").strip().lower())
+   db.session.add(u); db.session.commit(); login_user(u); return redirect(url_for("dashboard"))
  return render_template("auth.html",register=True)
-@app.route("/verify-email",methods=["GET","POST"])
-def verify_email():
- pending=session.get("pending_user")
- if not pending: return redirect(url_for("register"))
- if request.method=="POST":
-  if datetime.utcnow().timestamp()>session.get("otp_expires",0): flash("Mã đã hết hạn. Hãy đăng ký lại để nhận mã mới.")
-  elif session.get("otp_attempts",0)>=5: flash("Bạn đã nhập sai quá nhiều lần. Hãy đăng ký lại.")
-  elif check_password_hash(session.get("otp_code",""),request.form.get("code","").strip()):
-   email=pending["email"]
-   if User.query.filter((User.email==email)|(User.username==pending["username"])).first():
-    session.pop("pending_user",None); flash("Tài khoản hoặc email đã tồn tại."); return redirect(url_for("register"))
-   u=User(username=pending["username"],email=email,password=pending["password"],admin=email==os.getenv("ADMIN_EMAIL","").strip().lower())
-   db.session.add(u); db.session.commit(); session.pop("pending_user",None); session.pop("otp_code",None); login_user(u); return redirect(url_for("dashboard"))
-  else:
-   session["otp_attempts"]=session.get("otp_attempts",0)+1; flash("Mã xác minh không đúng.")
- return render_template("verify.html",email=pending["email"],purpose="register")
-@app.route("/resend-code",methods=["POST"])
-def resend_code():
- pending=session.get("pending_user")
- uid=session.get("pending_login_id")
- if not pending and not uid: return redirect(url_for("register"))
- try: issue_otp(pending["email"] if pending else db.session.get(User,uid).email,"đăng ký" if pending else "đăng nhập"); flash("Đã gửi mã mới về Gmail.")
- except Exception as e: flash("Không gửi được mã: "+str(e))
- return redirect(url_for("verify_email" if pending else "verify_login"))
 @app.route("/login",methods=["GET","POST"])
 def login():
  if request.method=="POST":
   identity=request.form["identity"].strip()
   u=User.query.filter((User.email==identity.lower())|(User.username==identity)).first()
   if u and check_password_hash(u.password,request.form["password"]):
-   session["pending_login_id"]=u.id
-   try: issue_otp(u.email,"đăng nhập"); return redirect(url_for("verify_login"))
-   except Exception as e: session.pop("pending_login_id",None); flash("Không gửi được mã xác minh. "+str(e))
-  else: flash("Sai thông tin đăng nhập.")
- return render_template("auth.html",register=False)
-@app.route("/verify-login",methods=["GET","POST"])
-def verify_login():
- uid=session.get("pending_login_id")
- u=db.session.get(User,uid) if uid else None
- if not u: return redirect(url_for("login"))
- if request.method=="POST":
-  if datetime.utcnow().timestamp()>session.get("otp_expires",0): flash("Mã đã hết hạn. Hãy đăng nhập lại để nhận mã mới.")
-  elif session.get("otp_attempts",0)>=5: session.pop("pending_login_id",None); flash("Quá nhiều lần nhập sai. Hãy đăng nhập lại."); return redirect(url_for("login"))
-  elif check_password_hash(session.get("otp_code",""),request.form.get("code","").strip()):
    admin_email=os.getenv("ADMIN_EMAIL","").strip().lower()
    if admin_email and u.email.lower()==admin_email and not u.admin: u.admin=True; db.session.commit()
-   session.pop("pending_login_id",None); session.pop("otp_code",None); login_user(u); return redirect(url_for("dashboard"))
-  else: session["otp_attempts"]=session.get("otp_attempts",0)+1; flash("Mã xác minh không đúng.")
- return render_template("verify.html",email=u.email,purpose="login")
+   login_user(u); return redirect(url_for("dashboard"))
+  else: flash("Sai thông tin đăng nhập.")
+ return render_template("auth.html",register=False)
 @app.route("/google-login")
 def google_login():
  client=os.getenv("GOOGLE_CLIENT_ID","").strip()
