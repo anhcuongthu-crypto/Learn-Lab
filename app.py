@@ -60,7 +60,7 @@ def lesson(lid):
   qs=l.questions; score=sum(1 for q in qs if request.form.get(str(q.id),"").strip().casefold()==q.answer.strip().casefold()); pct=round(score*100/len(qs)) if qs else 0
   p=Progress.query.filter_by(user_id=current_user.id,lesson_id=lid).first()
   if not p: p=Progress(user_id=current_user.id,lesson_id=lid); db.session.add(p)
-  p.score=max(p.score,pct)
+  p.score=max(int(p.score or 0),pct)
   if pct>=60:
    current_user.xp+=score*10+10
    if current_user.last_study!=date.today(): current_user.streak=current_user.streak+1 if current_user.last_study and (date.today()-current_user.last_study).days==1 else 1; current_user.last_study=date.today()
