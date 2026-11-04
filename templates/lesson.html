@@ -1,1 +1,76 @@
-{% extends "base.html" %}{% block title %}{{lesson.title}} — LearnLab{% endblock %}{% block content %}<a href="/course/{{lesson.course_id}}">← {{lesson.course.title}}</a><div style="margin:18px 0 22px"><p class="muted" style="font-weight:800;letter-spacing:1px;text-transform:uppercase">BÀI HỌC</p><h1 style="margin:0 0 8px">{{lesson.title}}</h1><p class="muted">{{lesson.description}}</p><small class="muted">{{lesson.questions|length}} câu hỏi · Hoàn thành bài để nhận XP</small></div><form method="post" class="card">{% for q in lesson.questions %}<div class="question"><h3><span style="color:#8174e5">Câu {{loop.index}}.</span> {{q.prompt}}</h3>{% if q.choices %}{% for choice in q.choices.split('|') %}<label><input type="radio" name="{{q.id}}" value="{{choice}}" required> <span>{{choice}}</span></label>{% endfor %}{% else %}<input name="{{q.id}}" required placeholder="Nhập câu trả lời của bạn...">{% endif %}{% if q.hint %}<small class="muted">💡 Gợi ý: {{q.hint}}</small>{% endif %}</div>{% else %}<p>Bài học chưa có câu hỏi.</p>{% endfor %}<div style="padding-top:20px"><button type="submit" style="width:100%">Nộp bài →</button></div></form>{% endblock %}
+{% extends "base.html" %}{% block title %}{{lesson.title}} — LearnLab{% endblock %}{% block content %}
+<a href="/course/{{lesson.course_id}}">← {{lesson.course.title}}</a>
+<div style="margin:18px 0 22px">
+ <p class="muted" style="font-weight:800;letter-spacing:1px;text-transform:uppercase">BÀI HỌC</p>
+ <h1 style="margin:0 0 8px">{{lesson.title}}</h1><p class="muted">{{lesson.description}}</p>
+ <div style="display:flex;justify-content:space-between;gap:12px;margin:18px 0 8px"><strong id="stepText">Câu 1 / {{lesson.questions|length}}</strong><strong id="progressText">0 / {{lesson.questions|length}} đúng</strong></div>
+ <div style="height:12px;background:#e9eaf2;border-radius:30px;overflow:hidden"><div id="progressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#635bdb,#a276f2);border-radius:30px;transition:width .3s"></div></div>
+</div>
+<div class="card" style="padding:26px" id="quiz">
+{% for q in lesson.questions %}
+ <section class="question-step" data-index="{{loop.index0}}" {% if not loop.first %}hidden{% endif %}>
+  <h2 style="margin-top:0"><span style="color:#8174e5">Câu {{loop.index}}.</span> {{q.prompt}}</h2>
+  {% if q.choices %}
+   <div class="answer-options" style="display:grid;gap:10px;margin:20px 0">
+   {% for choice in q.choices.split('|') %}
+    <label class="answer-option" style="display:flex;align-items:center;gap:10px;padding:13px 15px;border:1px solid #dfe4ef;border-radius:13px;cursor:pointer"><input type="radio" name="answer-{{q.id}}" value="{{choice}}"><span>{{choice}}</span></label>
+   {% endfor %}
+   </div>
+  {% else %}
+   <input class="free-answer" type="text" placeholder="Nhập câu trả lời..." style="width:100%;margin:16px 0">
+  {% endif %}
+  {% if q.hint %}<small class="muted">💡 Gợi ý: {{q.hint}}</small>{% endif %}
+ </section>
+{% else %}<p>Bài học chưa có câu hỏi.</p>{% endfor %}
+<div id="feedback" role="status" style="display:none;margin-top:20px;padding:14px;border-radius:12px"></div>
+<button id="checkButton" type="button" style="width:100%;margin-top:20px" {% if not lesson.questions %}disabled{% endif %}>Kiểm tra →</button>
+<button id="nextButton" type="button" style="display:none;width:100%;margin-top:12px">Câu tiếp theo →</button>
+</div>
+<script>
+(function(){
+ const lid={{ lesson.id|tojson }}, total={{ lesson.questions|length }};
+ const steps=Array.from(document.querySelectorAll(".question-step"));
+ const bar=document.getElementById("progressBar"), progressText=document.getElementById("progressText"), stepText=document.getElementById("stepText");
+ const check=document.getElementById("checkButton"), next=document.getElementById("nextButton"), feedback=document.getElementById("feedback");
+ let index=0, locked=false;
+ function selectedAnswer(){
+  const step=steps[index], radio=step.querySelector('input[type="radio"]:checked');
+  if(radio) return radio.value;
+  const field=step.querySelector(".free-answer");
+  return field ? field.value.trim() : "";
+ }
+ function showStep(){
+  steps.forEach((s,i)=>s.hidden=i!==index);
+  stepText.textContent="Câu "+(index+1)+" / "+total;
+  feedback.style.display="none"; check.style.display="block"; next.style.display="none"; locked=false;
+ }
+ check.addEventListener("click",async function(){
+  if(locked) return;
+  const answer=selectedAnswer();
+  if(!answer){ feedback.textContent="Hãy chọn hoặc nhập câu trả lời trước nhé."; feedback.style.display="block"; feedback.style.background="#fff4df"; feedback.style.color="#865b12"; return; }
+  locked=true; check.disabled=true; check.textContent="Đang kiểm tra...";
+  try{
+   const response=await fetch("/lesson/"+lid+"/answer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({answer})});
+   const data=await response.json();
+   if(!response.ok) throw new Error(data.error||"Không thể kiểm tra câu trả lời.");
+   if(data.correct){
+    feedback.textContent="✓ Chính xác! Bạn đã tiến thêm một bước.";
+    feedback.style.background="#e8f8ef"; feedback.style.color="#167344";
+    bar.style.width=(data.progress/total*100)+"%";
+    progressText.textContent=data.progress+" / "+total+" đúng";
+   }else{
+    feedback.textContent="✕ Chưa đúng. Đáp án: "+data.correct_answer+". Thanh tiến độ được giữ nguyên.";
+    feedback.style.background="#fff0ef"; feedback.style.color="#b33b35";
+   }
+   feedback.style.display="block"; check.style.display="none";
+   if(data.done){ next.textContent="Xem kết quả →"; next.onclick=()=>location.href=data.result_url; }
+   else { next.textContent="Câu tiếp theo →"; next.onclick=()=>{index++;showStep();}; }
+   next.style.display="block";
+  }catch(err){
+   feedback.textContent=err.message; feedback.style.display="block"; feedback.style.background="#fff0ef"; feedback.style.color="#b33b35"; locked=false;
+  }finally{check.disabled=false;check.textContent="Kiểm tra →";}
+ });
+ showStep();
+})();
+</script>
+{% endblock %}
