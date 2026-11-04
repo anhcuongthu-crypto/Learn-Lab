@@ -1,1 +1,5 @@
-Flask==3.1.0\nFlask-SQLAlchemy==3.1.1\nFlask-Login==0.6.3\ngunicorn==23.0.0\npsycopg[binary]==3.2.3\n
+Flask==3.1.0
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+gunicorn==23.0.0
+psycopg[binary]==3.2.3
