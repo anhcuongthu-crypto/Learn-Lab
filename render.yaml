@@ -1,0 +1,21 @@
+databases:
+  - name: learnlab-db
+    plan: free
+    databaseName: learnlab
+    user: learnlab
+services:
+  - type: web
+    name: learnlab
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: learnlab-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
